@@ -11,6 +11,7 @@ class CalendarColumnViewCard extends HTMLElement {
     this._events = {};
     this._loading = false;
     this._error = null;
+    this._selectedEvent = null;
   }
 
   setConfig(config) {
@@ -18,12 +19,36 @@ class CalendarColumnViewCard extends HTMLElement {
       throw new Error('You must define at least one calendar entity');
     }
 
+    // Normalize entities to support both string and object formats
+    const normalizedEntities = config.entities.map((entity, index) => {
+      if (typeof entity === 'string') {
+        // Simple format: 'calendar.name'
+        return {
+          entity: entity,
+          name: null, // Will use friendly_name from entity
+          color: null, // Will use default color
+        };
+      } else if (typeof entity === 'object' && entity.entity) {
+        // Object format: { entity: 'calendar.name', name: 'Custom', color: '#ff0000' }
+        return {
+          entity: entity.entity,
+          name: entity.name || null,
+          color: entity.color || null,
+        };
+      } else {
+        throw new Error('Invalid entity format');
+      }
+    });
+
     this.config = {
-      entities: config.entities,
+      entities: normalizedEntities,
       start_hour: config.start_hour !== undefined ? config.start_hour : 6,
       end_hour: config.end_hour !== undefined ? config.end_hour : 22,
       title: config.title || 'Calendar View',
       hour_height: config.hour_height || 60,
+      time_format: config.time_format || '24h', // '12h' or '24h'
+      show_all_day_events: config.show_all_day_events !== false, // default true
+      compact_mode: config.compact_mode || false,
     };
 
     // Validate hours
@@ -49,7 +74,10 @@ class CalendarColumnViewCard extends HTMLElement {
       this._eventsLoaded = true;
     }
 
-    this.render();
+    // Don't re-render if modal is open (prevents flashing)
+    if (!this._selectedEvent) {
+      this.render();
+    }
   }
 
   _formatDateTime(date) {
@@ -82,7 +110,8 @@ class CalendarColumnViewCard extends HTMLElement {
 
       const events = {};
 
-      for (const entityId of this.config.entities) {
+      for (const entityConfig of this.config.entities) {
+        const entityId = entityConfig.entity;
         try {
           console.log(`Fetching events for ${entityId} from ${startTime} to ${endTime}`);
 
@@ -160,11 +189,37 @@ class CalendarColumnViewCard extends HTMLElement {
   }
 
   _formatTime(hour) {
+    if (this.config.time_format === '12h') {
+      const period = hour >= 12 ? 'PM' : 'AM';
+      const hour12 = hour === 0 ? 12 : hour > 12 ? hour - 12 : hour;
+      return `${hour12}:00 ${period}`;
+    }
     return `${hour.toString().padStart(2, '0')}:00`;
   }
 
+  _formatEventTime(date) {
+    if (this.config.time_format === '12h') {
+      return date.toLocaleTimeString(undefined, {
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true
+      });
+    }
+    return date.toLocaleTimeString(undefined, {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    });
+  }
+
   _getCalendarColor(entityId, index) {
-    // Try to use calendar's configured color first
+    // First check if there's a custom color in the config
+    const entityConfig = this.config.entities.find(e => e.entity === entityId);
+    if (entityConfig && entityConfig.color) {
+      return entityConfig.color;
+    }
+
+    // Try to use calendar's configured color from entity attributes
     if (this._hass && this._hass.states[entityId]) {
       const stateObj = this._hass.states[entityId];
       if (stateObj.attributes && stateObj.attributes.color) {
@@ -257,12 +312,13 @@ class CalendarColumnViewCard extends HTMLElement {
 
     for (const group of overlapGroups) {
       const width = 100 / group.length;
+      const gap = 2; // 2% gap between events
 
       group.forEach((event, index) => {
         layouts.push({
           event: event,
-          width: `${width}%`,
-          left: `${width * index}%`,
+          width: `calc(${width}% - ${gap}px)`,
+          left: `calc(${width * index}% + ${index > 0 ? gap : 0}px)`,
         });
       });
     }
@@ -271,6 +327,8 @@ class CalendarColumnViewCard extends HTMLElement {
   }
 
   _renderAllDayEvents(entityId, color) {
+    if (!this.config.show_all_day_events) return '';
+
     const events = this._events[entityId] || [];
 
     // Filter all-day events (events with just date, not dateTime)
@@ -282,8 +340,14 @@ class CalendarColumnViewCard extends HTMLElement {
 
     return allDayEvents.map(event => {
       const title = event.summary || 'Untitled Event';
+      const eventDate = event.start?.date || event.start?.dateTime;
+      const eventId = `${entityId}-allday-${eventDate}`;
+
       return `
-        <div class="all-day-event" style="background-color: ${color}; border-left: 3px solid ${this._adjustColor(color, -20)};">
+        <div class="all-day-event event-clickable"
+             data-event-id="${eventId}"
+             style="background-color: ${color}; border: 1px solid rgba(0, 0, 0, 0.3);"
+             title="Click for details">
           ${title}
         </div>
       `;
@@ -326,26 +390,38 @@ class CalendarColumnViewCard extends HTMLElement {
       const top = (startMinutes / 60) * this.config.hour_height;
       const height = Math.max((durationMinutes / 60) * this.config.hour_height, 20);
 
-      const timeStr = startTime.toLocaleTimeString(undefined, {
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false
-      });
-
+      const timeStr = this._formatEventTime(startTime);
       const title = event.summary || 'Untitled Event';
 
+      // Create unique event ID for click handling
+      const eventId = `${entityId}-${startTime.getTime()}`;
+
+      // For short events (< 35 minutes), use inline layout or title-only
+      const isShortEvent = durationMinutes < 35;
+      const isTinyEvent = height < 25;
+
       return `
-        <div class="event"
+        <div class="event event-clickable ${isShortEvent ? 'event-short' : ''} ${isTinyEvent ? 'event-tiny' : ''}"
+             data-event-id="${eventId}"
              style="
                top: ${top}px;
                height: ${height}px;
                background-color: ${color};
-               border-left: 3px solid ${this._adjustColor(color, -20)};
+               border: 1px solid rgba(0, 0, 0, 0.3);
              "
-             title="${title}${event.location ? '\n' + event.location : ''}">
-          <div class="event-time">${timeStr}</div>
-          <div class="event-title">${title}</div>
-          ${event.location ? `<div class="event-location">${event.location}</div>` : ''}
+             title="Click for details">
+          ${isTinyEvent ? `
+            <div class="event-title-only">${title}</div>
+          ` : isShortEvent ? `
+            <div class="event-inline">
+              <span class="event-time-inline">${timeStr}</span>
+              <span class="event-title-inline">${title}</span>
+            </div>
+          ` : `
+            <div class="event-time">${timeStr}</div>
+            <div class="event-title">${title}</div>
+            ${event.location && !this.config.compact_mode ? `<div class="event-location">${event.location}</div>` : ''}
+          `}
         </div>
       `;
     }).join('');
@@ -361,11 +437,180 @@ class CalendarColumnViewCard extends HTMLElement {
   }
 
   _getCalendarName(entityId) {
+    // First check if there's a custom name in the config
+    const entityConfig = this.config.entities.find(e => e.entity === entityId);
+    if (entityConfig && entityConfig.name) {
+      return entityConfig.name;
+    }
+
+    // Fall back to entity's friendly_name
     if (this._hass && this._hass.states[entityId]) {
       const stateObj = this._hass.states[entityId];
       return stateObj.attributes.friendly_name || entityId.replace('calendar.', '');
     }
     return entityId.replace('calendar.', '');
+  }
+
+  _showEventDetails(eventId, entityId, color) {
+    // Find the event in the events data
+    const events = this._events[entityId] || [];
+    let selectedEvent = null;
+
+    // Search for the event by ID
+    for (const event of events) {
+      const timeStamp = event.start?.dateTime ? new Date(event.start.dateTime).getTime() : null;
+      const checkId = `${entityId}-${timeStamp}`;
+      const allDayId = `${entityId}-allday-${event.start?.date || event.start?.dateTime}`;
+
+      if (checkId === eventId || allDayId === eventId) {
+        selectedEvent = {
+          ...event,
+          entityId,
+          color
+        };
+        break;
+      }
+    }
+
+    if (selectedEvent) {
+      this._selectedEvent = selectedEvent;
+      this.render();
+    }
+  }
+
+  _closeEventDetails() {
+    this._selectedEvent = null;
+    this.render();
+  }
+
+  _renderEventModal() {
+    if (!this._selectedEvent) return '';
+
+    const event = this._selectedEvent;
+    const isAllDay = event.start?.date && !event.start?.dateTime;
+
+    let startStr, endStr, durationStr;
+
+    if (isAllDay) {
+      const startDate = new Date(event.start.date);
+      const endDate = event.end?.date ? new Date(event.end.date) : null;
+
+      startStr = startDate.toLocaleDateString(undefined, {
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric'
+      });
+
+      if (endDate && endDate > startDate) {
+        endDate.setDate(endDate.getDate() - 1); // Calendar API returns day after
+        endStr = endDate.toLocaleDateString(undefined, {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        });
+        const days = Math.ceil((endDate - startDate) / (1000 * 60 * 60 * 24)) + 1;
+        durationStr = `${days} day${days > 1 ? 's' : ''}`;
+      }
+    } else {
+      const startDate = new Date(event.start.dateTime);
+      const endDate = new Date(event.end.dateTime);
+
+      startStr = startDate.toLocaleString(undefined, {
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        hour: this.config.time_format === '12h' ? 'numeric' : '2-digit',
+        minute: '2-digit',
+        hour12: this.config.time_format === '12h'
+      });
+
+      endStr = endDate.toLocaleString(undefined, {
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        hour: this.config.time_format === '12h' ? 'numeric' : '2-digit',
+        minute: '2-digit',
+        hour12: this.config.time_format === '12h'
+      });
+
+      const durationMs = endDate - startDate;
+      const hours = Math.floor(durationMs / (1000 * 60 * 60));
+      const minutes = Math.floor((durationMs % (1000 * 60 * 60)) / (1000 * 60));
+      durationStr = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+    }
+
+    const calendarName = this._getCalendarName(event.entityId);
+    const title = event.summary || 'Untitled Event';
+    const description = event.description || '';
+    const location = event.location || '';
+
+    return `
+      <div class="event-modal-overlay" id="event-modal-overlay">
+        <div class="event-modal">
+          <div class="event-modal-header" style="border-left: 4px solid ${event.color};">
+            <h3>${title}</h3>
+            <button class="modal-close" id="modal-close">×</button>
+          </div>
+          <div class="event-modal-body">
+            <div class="event-modal-section">
+              <div class="event-modal-label">Calendar</div>
+              <div class="event-modal-value">
+                <span class="color-indicator" style="background-color: ${event.color};"></span>
+                ${calendarName}
+              </div>
+            </div>
+
+            ${isAllDay ? `
+              <div class="event-modal-section">
+                <div class="event-modal-label">Date</div>
+                <div class="event-modal-value">${startStr}</div>
+              </div>
+              ${endStr ? `
+                <div class="event-modal-section">
+                  <div class="event-modal-label">End Date</div>
+                  <div class="event-modal-value">${endStr}</div>
+                </div>
+                <div class="event-modal-section">
+                  <div class="event-modal-label">Duration</div>
+                  <div class="event-modal-value">${durationStr}</div>
+                </div>
+              ` : ''}
+            ` : `
+              <div class="event-modal-section">
+                <div class="event-modal-label">Start</div>
+                <div class="event-modal-value">${startStr}</div>
+              </div>
+              <div class="event-modal-section">
+                <div class="event-modal-label">End</div>
+                <div class="event-modal-value">${endStr}</div>
+              </div>
+              <div class="event-modal-section">
+                <div class="event-modal-label">Duration</div>
+                <div class="event-modal-value">${durationStr}</div>
+              </div>
+            `}
+
+            ${location ? `
+              <div class="event-modal-section">
+                <div class="event-modal-label">Location</div>
+                <div class="event-modal-value">${location}</div>
+              </div>
+            ` : ''}
+
+            ${description ? `
+              <div class="event-modal-section">
+                <div class="event-modal-label">Description</div>
+                <div class="event-modal-value event-description">${description}</div>
+              </div>
+            ` : ''}
+          </div>
+        </div>
+      </div>
+    `;
   }
 
   render() {
@@ -377,6 +622,8 @@ class CalendarColumnViewCard extends HTMLElement {
     }
 
     const totalHeight = (this.config.end_hour - this.config.start_hour) * this.config.hour_height;
+
+    const compactClass = this.config.compact_mode ? 'compact-mode' : '';
 
     this.shadowRoot.innerHTML = `
       <style>
@@ -615,6 +862,49 @@ class CalendarColumnViewCard extends HTMLElement {
           margin-top: 2px;
         }
 
+        /* Short event styles */
+        .event-short {
+          padding: 2px 4px;
+        }
+
+        .event-tiny {
+          padding: 1px 4px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+
+        .event-title-only {
+          font-size: 10px;
+          font-weight: 500;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+          text-align: center;
+        }
+
+        .event-inline {
+          display: flex;
+          align-items: center;
+          gap: 4px;
+          overflow: hidden;
+        }
+
+        .event-time-inline {
+          font-weight: 600;
+          font-size: 10px;
+          opacity: 0.95;
+          flex-shrink: 0;
+        }
+
+        .event-title-inline {
+          font-weight: 500;
+          font-size: 11px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+
         .event-continues-before,
         .event-continues-after {
           position: absolute;
@@ -650,6 +940,173 @@ class CalendarColumnViewCard extends HTMLElement {
           color: var(--calendar-secondary-text);
         }
 
+        .event-clickable {
+          cursor: pointer;
+        }
+
+        /* Compact Mode Styles */
+        .compact-mode .card {
+          padding: 8px;
+        }
+
+        .compact-mode .header {
+          margin-bottom: 8px;
+        }
+
+        .compact-mode .header h2 {
+          font-size: 18px;
+        }
+
+        .compact-mode .grid-cell-hour {
+          height: ${this.config.hour_height * 0.8}px;
+        }
+
+        .compact-mode .grid-cell-allday {
+          min-height: 28px;
+          padding: 2px 6px;
+        }
+
+        .compact-mode .all-day-event {
+          font-size: 11px;
+          padding: 2px 6px;
+          margin: 1px 0;
+        }
+
+        .compact-mode .event {
+          padding: 2px 4px;
+        }
+
+        .compact-mode .event-time {
+          font-size: 10px;
+        }
+
+        .compact-mode .event-title {
+          font-size: 11px;
+        }
+
+        /* Event Modal Styles */
+        .event-modal-overlay {
+          position: fixed;
+          top: 0;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          background: rgba(0, 0, 0, 0.6);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          z-index: 1000;
+          animation: fadeIn 0.2s ease;
+        }
+
+        @keyframes fadeIn {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
+
+        .event-modal {
+          background: var(--calendar-column-bg);
+          border-radius: 8px;
+          box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+          max-width: 500px;
+          width: 90%;
+          max-height: 80vh;
+          overflow: hidden;
+          display: flex;
+          flex-direction: column;
+          animation: slideUp 0.3s ease;
+        }
+
+        @keyframes slideUp {
+          from {
+            transform: translateY(20px);
+            opacity: 0;
+          }
+          to {
+            transform: translateY(0);
+            opacity: 1;
+          }
+        }
+
+        .event-modal-header {
+          padding: 20px;
+          border-bottom: 1px solid var(--calendar-border);
+          display: flex;
+          justify-content: space-between;
+          align-items: flex-start;
+          gap: 16px;
+        }
+
+        .event-modal-header h3 {
+          margin: 0;
+          font-size: 20px;
+          font-weight: 600;
+          color: var(--calendar-text);
+          flex: 1;
+        }
+
+        .modal-close {
+          background: none;
+          border: none;
+          font-size: 28px;
+          color: var(--calendar-secondary-text);
+          cursor: pointer;
+          padding: 0;
+          line-height: 1;
+          width: 32px;
+          height: 32px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          border-radius: 4px;
+          transition: background 0.2s;
+        }
+
+        .modal-close:hover {
+          background: var(--divider-color, #e0e0e0);
+        }
+
+        .event-modal-body {
+          padding: 20px;
+          overflow-y: auto;
+          flex: 1;
+        }
+
+        .event-modal-section {
+          margin-bottom: 16px;
+        }
+
+        .event-modal-section:last-child {
+          margin-bottom: 0;
+        }
+
+        .event-modal-label {
+          font-size: 12px;
+          font-weight: 600;
+          text-transform: uppercase;
+          color: var(--calendar-secondary-text);
+          margin-bottom: 6px;
+          letter-spacing: 0.5px;
+        }
+
+        .event-modal-value {
+          font-size: 15px;
+          color: var(--calendar-text);
+          line-height: 1.5;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+
+        .event-modal-value .color-indicator {
+          flex-shrink: 0;
+        }
+
+        .event-description {
+          white-space: pre-wrap;
+          word-wrap: break-word;
+        }
+
         @media (max-width: 768px) {
           .card {
             padding: 12px;
@@ -679,6 +1136,7 @@ class CalendarColumnViewCard extends HTMLElement {
         }
       </style>
 
+      <div class="${compactClass}">
       <div class="card">
         <div class="header">
           <h2>${this.config.title}</h2>
@@ -699,7 +1157,8 @@ class CalendarColumnViewCard extends HTMLElement {
             <div class="calendar-grid">
               <!-- Header row -->
               <div class="grid-cell-header time-col"></div>
-              ${this.config.entities.map((entityId, index) => {
+              ${this.config.entities.map((entityConfig, index) => {
+                const entityId = entityConfig.entity;
                 const color = this._getCalendarColor(entityId, index);
                 const name = this._getCalendarName(entityId);
                 return `
@@ -711,20 +1170,24 @@ class CalendarColumnViewCard extends HTMLElement {
               }).join('')}
 
               <!-- All-day row -->
-              <div class="grid-cell-allday time-col">All Day</div>
-              ${this.config.entities.map((entityId, index) => {
-                const color = this._getCalendarColor(entityId, index);
-                return `
-                  <div class="grid-cell-allday">
-                    ${this._renderAllDayEvents(entityId, color)}
-                  </div>
-                `;
-              }).join('')}
+              ${this.config.show_all_day_events ? `
+                <div class="grid-cell-allday time-col">All Day</div>
+                ${this.config.entities.map((entityConfig, index) => {
+                  const entityId = entityConfig.entity;
+                  const color = this._getCalendarColor(entityId, index);
+                  return `
+                    <div class="grid-cell-allday">
+                      ${this._renderAllDayEvents(entityId, color)}
+                    </div>
+                  `;
+                }).join('')}
+              ` : ''}
 
               <!-- Hour rows -->
               ${hours.map(hour => `
                 <div class="grid-cell-hour time-col">${this._formatTime(hour)}</div>
-                ${this.config.entities.map((entityId, index) => {
+                ${this.config.entities.map((entityConfig, index) => {
+                  const entityId = entityConfig.entity;
                   const color = this._getCalendarColor(entityId, index);
                   return `
                     <div class="grid-cell-hour">
@@ -736,6 +1199,10 @@ class CalendarColumnViewCard extends HTMLElement {
             </div>
           </div>
         `}
+
+        <!-- Event Details Modal -->
+        ${this._renderEventModal()}
+      </div>
       </div>
     `;
 
@@ -756,6 +1223,72 @@ class CalendarColumnViewCard extends HTMLElement {
     }
     if (nextButton) {
       nextButton.addEventListener('click', () => this._nextDay());
+    }
+
+    // Add event click listeners
+    const clickableEvents = this.shadowRoot.querySelectorAll('.event-clickable');
+    clickableEvents.forEach(eventEl => {
+      eventEl.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const eventId = eventEl.dataset.eventId;
+
+        // Find the entity ID and color from parent elements
+        let entityId = null;
+        let color = null;
+
+        // Extract entity ID from event ID
+        // Event ID format: "calendar.name-timestamp" or "calendar.name-allday-date"
+        const lastDashIndex = eventId.lastIndexOf('-');
+        if (lastDashIndex > 0) {
+          const beforeLastDash = eventId.substring(0, lastDashIndex);
+          // Check if it's an allday event (has two dashes)
+          const secondLastDashIndex = beforeLastDash.lastIndexOf('-');
+          if (eventId.includes('-allday-') && secondLastDashIndex > 0) {
+            entityId = beforeLastDash.substring(0, secondLastDashIndex);
+          } else {
+            entityId = beforeLastDash;
+          }
+        }
+
+        // Get color from the event's background color
+        const bgColor = eventEl.style.backgroundColor;
+        if (bgColor) {
+          // Convert rgb to hex if needed
+          color = bgColor;
+        }
+
+        // Find color from config
+        const entityIndex = this.config.entities.findIndex(e => e.entity === entityId);
+        if (entityIndex !== -1) {
+          color = this._getCalendarColor(entityId, entityIndex);
+        }
+
+        console.log('[Event Click] Event ID:', eventId);
+        console.log('[Event Click] Extracted Entity ID:', entityId);
+        console.log('[Event Click] Color:', color);
+
+        if (entityId) {
+          this._showEventDetails(eventId, entityId, color);
+        } else {
+          console.error('[Event Click] Could not extract entity ID from:', eventId);
+        }
+      });
+    });
+
+    // Modal close listeners
+    const modalOverlay = this.shadowRoot.getElementById('event-modal-overlay');
+    const modalClose = this.shadowRoot.getElementById('modal-close');
+
+    if (modalOverlay) {
+      modalOverlay.addEventListener('click', (e) => {
+        if (e.target === modalOverlay) {
+          this._closeEventDetails();
+        }
+      });
+    }
+
+    if (modalClose) {
+      modalClose.addEventListener('click', () => this._closeEventDetails());
     }
   }
 
@@ -786,11 +1319,17 @@ class CalendarColumnViewCardEditor extends HTMLElement {
     super();
     this.attachShadow({ mode: 'open' });
     this._config = {};
-    this._isEditing = false; // Flag to prevent re-render during user input
   }
 
   connectedCallback() {
     this.loadCustomElements();
+  }
+
+  disconnectedCallback() {
+    // Clean up debounce timeout to prevent memory leaks
+    if (this._debounceTimeout) {
+      clearTimeout(this._debounceTimeout);
+    }
   }
 
   async loadCustomElements() {
@@ -801,26 +1340,121 @@ class CalendarColumnViewCardEditor extends HTMLElement {
   }
 
   setConfig(config) {
-    this._config = {
+    // Normalize entities in the same way as the main card
+    const normalizedEntities = (config.entities || []).map((entity, index) => {
+      if (typeof entity === 'string') {
+        return { entity: entity, name: null, color: null };
+      } else if (typeof entity === 'object' && entity.entity) {
+        return {
+          entity: entity.entity,
+          name: entity.name || null,
+          color: entity.color || null,
+        };
+      } else {
+        return { entity: '', name: null, color: null };
+      }
+    });
+
+    const newConfig = {
       ...config, // Preserve all original config including type
-      entities: config.entities || [],
+      entities: normalizedEntities,
       start_hour: config.start_hour !== undefined ? config.start_hour : 6,
       end_hour: config.end_hour !== undefined ? config.end_hour : 22,
       title: config.title || 'Calendar View',
       hour_height: config.hour_height || 60,
+      time_format: config.time_format || '24h',
+      show_all_day_events: config.show_all_day_events !== false,
+      compact_mode: config.compact_mode || false,
     };
-    // Only render if we're not currently editing (prevents focus loss)
-    if (!this._isEditing) {
+
+    // Check if config actually changed - prevents unnecessary re-renders
+    if (this._config && this._configsEqual(this._config, newConfig)) {
+      console.log('[Calendar Editor] Config unchanged, skipping render');
+      return; // No change, skip everything
+    }
+
+    console.log('[Calendar Editor] Config changed, updating editor');
+    this._config = newConfig;
+
+    // If editor already exists, just update values without re-rendering
+    if (this.shadowRoot && this.shadowRoot.querySelector('.editor-container')) {
+      console.log('[Calendar Editor] Updating field values only');
+      this._updateFieldValues();
+    } else {
+      console.log('[Calendar Editor] Full render (first time)');
       this.render();
+    }
+  }
+
+  _configsEqual(config1, config2) {
+    // Deep compare configs to detect actual changes
+    if (config1.title !== config2.title) return false;
+    if (config1.start_hour !== config2.start_hour) return false;
+    if (config1.end_hour !== config2.end_hour) return false;
+    if (config1.hour_height !== config2.hour_height) return false;
+    if (config1.time_format !== config2.time_format) return false;
+    if (config1.show_all_day_events !== config2.show_all_day_events) return false;
+    if (config1.compact_mode !== config2.compact_mode) return false;
+
+    // Compare entities array (now objects with entity, name, color)
+    if (config1.entities.length !== config2.entities.length) return false;
+    for (let i = 0; i < config1.entities.length; i++) {
+      const e1 = config1.entities[i];
+      const e2 = config2.entities[i];
+      if (e1.entity !== e2.entity || e1.name !== e2.name || e1.color !== e2.color) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  _updateFieldValues() {
+    // Update field values without destroying/recreating them
+    const titleField = this.shadowRoot.getElementById('title-field');
+    const startHourField = this.shadowRoot.getElementById('start-hour-field');
+    const endHourField = this.shadowRoot.getElementById('end-hour-field');
+    const hourHeightField = this.shadowRoot.getElementById('hour-height-field');
+    const entitiesList = this.shadowRoot.getElementById('entities-list');
+
+    // Get the currently focused element (could be the inner input of ha-textfield)
+    const activeElement = this.shadowRoot.activeElement;
+    const focusedField = activeElement?.shadowRoot?.activeElement || activeElement;
+
+    // Only update if value has actually changed AND field is not focused (prevents cursor jumps)
+    if (titleField && titleField !== activeElement && titleField !== focusedField) {
+      if (titleField.value !== this._config.title) {
+        titleField.value = this._config.title || '';
+      }
+    }
+    if (startHourField && startHourField !== activeElement && startHourField !== focusedField) {
+      if (Number(startHourField.value) !== this._config.start_hour) {
+        startHourField.value = this._config.start_hour;
+      }
+    }
+    if (endHourField && endHourField !== activeElement && endHourField !== focusedField) {
+      if (Number(endHourField.value) !== this._config.end_hour) {
+        endHourField.value = this._config.end_hour;
+      }
+    }
+    if (hourHeightField && hourHeightField !== activeElement && hourHeightField !== focusedField) {
+      if (Number(hourHeightField.value) !== this._config.hour_height) {
+        hourHeightField.value = this._config.hour_height;
+      }
+    }
+
+    // Re-render entities list if it changed
+    if (entitiesList) {
+      this._renderEntitiesList(entitiesList);
     }
   }
 
   set hass(hass) {
     this._hass = hass;
     if (!this._config) return;
-    // Update ha-entity-picker with hass
+    // Update ha-entity-picker with hass (don't re-render entire editor)
     const addEntityPicker = this.shadowRoot?.getElementById('add-entity-picker');
-    if (addEntityPicker) {
+    if (addEntityPicker && addEntityPicker.hass !== hass) {
       addEntityPicker.hass = hass;
     }
   }
@@ -839,7 +1473,10 @@ class CalendarColumnViewCardEditor extends HTMLElement {
     }
 
     let value;
-    if (ev.detail && ev.detail.value !== undefined) {
+    if (target.type === 'checkbox') {
+      // Handle checkboxes first
+      value = target.checked;
+    } else if (ev.detail && ev.detail.value !== undefined) {
       // ha-entity-picker and other HA components use detail.value
       value = ev.detail.value;
     } else if (target.value !== undefined) {
@@ -849,21 +1486,29 @@ class CalendarColumnViewCardEditor extends HTMLElement {
       } else {
         value = target.value;
       }
-    } else if (target.type === 'checkbox') {
-      value = target.checked;
     } else {
       return;
     }
 
     console.log(`Updating config ${configPath} to:`, value);
 
-    // Set config value
+    // Set config value immediately (for internal state)
     this._config = {
       ...this._config,
       [configPath]: value,
     };
 
-    this._fireConfigChanged();
+    // Debounce the config-changed event to prevent HA from interfering with focus
+    // Clear any pending timeout
+    if (this._debounceTimeout) {
+      clearTimeout(this._debounceTimeout);
+    }
+
+    // Wait 300ms after last keystroke before notifying Home Assistant
+    this._debounceTimeout = setTimeout(() => {
+      console.log(`[Calendar Editor] Debounced: Firing config-changed for ${configPath}`);
+      this._fireConfigChanged();
+    }, 300);
   }
 
   _fireConfigChanged() {
@@ -906,6 +1551,35 @@ class CalendarColumnViewCardEditor extends HTMLElement {
           width: 100%;
         }
 
+        select {
+          width: 100%;
+          padding: 8px;
+          border: 1px solid var(--divider-color, #e0e0e0);
+          border-radius: 4px;
+          font-size: 14px;
+          background: var(--card-background-color, white);
+          color: var(--primary-text-color);
+          cursor: pointer;
+        }
+
+        select:focus {
+          outline: none;
+          border-color: var(--primary-color, #03a9f4);
+        }
+
+        input[type="checkbox"] {
+          margin-right: 8px;
+          width: 18px;
+          height: 18px;
+          cursor: pointer;
+        }
+
+        label:has(input[type="checkbox"]) {
+          display: flex;
+          align-items: center;
+          cursor: pointer;
+        }
+
         .description {
           font-size: 12px;
           color: var(--secondary-text-color);
@@ -924,43 +1598,146 @@ class CalendarColumnViewCardEditor extends HTMLElement {
 
         #entities-list {
           display: flex;
-          flex-wrap: wrap;
-          gap: 8px;
+          flex-direction: column;
+          gap: 16px;
           margin-bottom: 12px;
           min-height: 20px;
         }
 
-        .entity-chip {
-          display: inline-flex;
-          align-items: center;
-          padding: 4px 12px;
-          background: var(--primary-color);
-          color: var(--text-primary-color, white);
-          border-radius: 16px;
-          font-size: 14px;
-          gap: 8px;
+        .entity-row {
+          border: 1px solid var(--divider-color, #e0e0e0);
+          border-radius: 8px;
+          padding: 12px;
+          background: var(--card-background-color, white);
         }
 
-        .entity-chip-remove {
+        .entity-row-header {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin-bottom: 12px;
+          padding-bottom: 8px;
+          border-bottom: 1px solid var(--divider-color, #e0e0e0);
+        }
+
+        .entity-name {
+          flex: 1;
+          font-weight: 500;
+          color: var(--primary-text-color);
+        }
+
+        .entity-row-remove {
           cursor: pointer;
-          padding: 0 4px;
+          padding: 4px 8px;
           margin: 0;
-          background: none;
+          background: var(--error-color, #f44336);
+          color: white;
           border: none;
-          color: inherit;
-          font-size: 18px;
+          border-radius: 4px;
+          font-size: 16px;
           line-height: 1;
+          transition: opacity 0.2s;
+        }
+
+        .entity-row-remove:hover {
           opacity: 0.8;
         }
 
-        .entity-chip-remove:hover {
-          opacity: 1;
+        .entity-row-config {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 12px;
+        }
+
+        .config-field {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+        }
+
+        .config-field label {
+          font-size: 12px;
+          color: var(--secondary-text-color);
+          font-weight: 500;
+        }
+
+        .config-field input[type="text"] {
+          padding: 8px;
+          border: 1px solid var(--divider-color, #e0e0e0);
+          border-radius: 4px;
+          font-size: 14px;
+          background: var(--card-background-color, white);
+          color: var(--primary-text-color);
+        }
+
+        .config-field input[type="text"]:focus {
+          outline: none;
+          border-color: var(--primary-color, #03a9f4);
+        }
+
+        .color-input-wrapper {
+          display: flex;
+          gap: 8px;
+          align-items: center;
+        }
+
+        .entity-color-picker {
+          width: 50px;
+          height: 36px;
+          border: 1px solid var(--divider-color, #e0e0e0);
+          border-radius: 4px;
+          cursor: pointer;
+        }
+
+        .entity-color-text {
+          flex: 1;
+          padding: 8px;
+          border: 1px solid var(--divider-color, #e0e0e0);
+          border-radius: 4px;
+          font-size: 14px;
+          font-family: monospace;
+          background: var(--card-background-color, white);
+          color: var(--primary-text-color);
+        }
+
+        .entity-color-text:focus {
+          outline: none;
+          border-color: var(--primary-color, #03a9f4);
+        }
+
+        .color-reset {
+          padding: 6px 10px;
+          background: var(--secondary-background-color, #f5f5f5);
+          color: var(--primary-text-color);
+          border: 1px solid var(--divider-color, #e0e0e0);
+          border-radius: 4px;
+          cursor: pointer;
+          font-size: 16px;
+          transition: background 0.2s;
+        }
+
+        .color-reset:hover {
+          background: var(--divider-color, #e0e0e0);
+        }
+
+        .color-indicator {
+          display: inline-block;
+          width: 16px;
+          height: 16px;
+          border-radius: 50%;
+          border: 2px solid var(--divider-color, #e0e0e0);
         }
 
         .no-entities {
           color: var(--secondary-text-color);
           font-style: italic;
           font-size: 14px;
+        }
+
+        @media (max-width: 600px) {
+          .entity-row-config {
+            grid-template-columns: 1fr;
+          }
         }
       </style>
 
@@ -1021,6 +1798,31 @@ class CalendarColumnViewCardEditor extends HTMLElement {
           ></ha-textfield>
           <div class="description">Height of each hour row (default: 60px)</div>
         </div>
+
+        <div class="option">
+          <label>Time Format</label>
+          <select id="time-format-field" name="time_format">
+            <option value="24h">24-hour (14:00)</option>
+            <option value="12h">12-hour (2:00 PM)</option>
+          </select>
+          <div class="description">Choose between 12-hour and 24-hour time display</div>
+        </div>
+
+        <div class="option">
+          <label>
+            <input type="checkbox" id="show-all-day-field" name="show_all_day_events" />
+            Show All-Day Events
+          </label>
+          <div class="description">Display all-day events in a separate row</div>
+        </div>
+
+        <div class="option">
+          <label>
+            <input type="checkbox" id="compact-mode-field" name="compact_mode" />
+            Compact Mode
+          </label>
+          <div class="description">Reduce spacing and hide some details for a more compact view</div>
+        </div>
       </div>
     `;
 
@@ -1040,8 +1842,6 @@ class CalendarColumnViewCardEditor extends HTMLElement {
     // Set values
     if (titleField) {
       titleField.value = this._config.title || '';
-      titleField.addEventListener('focus', () => { this._isEditing = true; });
-      titleField.addEventListener('blur', () => { this._isEditing = false; });
       titleField.addEventListener('input', this._valueChanged.bind(this));
     }
 
@@ -1058,11 +1858,14 @@ class CalendarColumnViewCardEditor extends HTMLElement {
 
       addEntityPicker.addEventListener('value-changed', (ev) => {
         const newEntity = ev.detail.value;
-        if (newEntity && !this._config.entities.includes(newEntity)) {
-          // Add the new entity to the list
+        // Check if entity already exists (comparing entity IDs)
+        const alreadyExists = this._config.entities.some(e => e.entity === newEntity);
+
+        if (newEntity && !alreadyExists) {
+          // Add the new entity as an object with null name/color (will use defaults)
           this._config = {
             ...this._config,
-            entities: [...this._config.entities, newEntity]
+            entities: [...this._config.entities, { entity: newEntity, name: null, color: null }]
           };
           this._fireConfigChanged();
 
@@ -1075,23 +1878,38 @@ class CalendarColumnViewCardEditor extends HTMLElement {
 
     if (startHourField) {
       startHourField.value = this._config.start_hour;
-      startHourField.addEventListener('focus', () => { this._isEditing = true; });
-      startHourField.addEventListener('blur', () => { this._isEditing = false; });
       startHourField.addEventListener('input', this._valueChanged.bind(this));
     }
 
     if (endHourField) {
       endHourField.value = this._config.end_hour;
-      endHourField.addEventListener('focus', () => { this._isEditing = true; });
-      endHourField.addEventListener('blur', () => { this._isEditing = false; });
       endHourField.addEventListener('input', this._valueChanged.bind(this));
     }
 
     if (hourHeightField) {
       hourHeightField.value = this._config.hour_height;
-      hourHeightField.addEventListener('focus', () => { this._isEditing = true; });
-      hourHeightField.addEventListener('blur', () => { this._isEditing = false; });
       hourHeightField.addEventListener('input', this._valueChanged.bind(this));
+    }
+
+    // Time format select
+    const timeFormatField = this.shadowRoot.getElementById('time-format-field');
+    if (timeFormatField) {
+      timeFormatField.value = this._config.time_format || '24h';
+      timeFormatField.addEventListener('change', this._valueChanged.bind(this));
+    }
+
+    // Show all-day events checkbox
+    const showAllDayField = this.shadowRoot.getElementById('show-all-day-field');
+    if (showAllDayField) {
+      showAllDayField.checked = this._config.show_all_day_events !== false;
+      showAllDayField.addEventListener('change', this._valueChanged.bind(this));
+    }
+
+    // Compact mode checkbox
+    const compactModeField = this.shadowRoot.getElementById('compact-mode-field');
+    if (compactModeField) {
+      compactModeField.checked = this._config.compact_mode || false;
+      compactModeField.addEventListener('change', this._valueChanged.bind(this));
     }
   }
 
@@ -1103,30 +1921,161 @@ class CalendarColumnViewCardEditor extends HTMLElement {
       return;
     }
 
-    container.innerHTML = entities.map(entityId => {
+    container.innerHTML = entities.map((entityConfig, index) => {
+      const entityId = entityConfig.entity;
       const stateObj = this._hass?.states[entityId];
-      const friendlyName = stateObj?.attributes?.friendly_name || entityId;
+      const friendlyName = stateObj?.attributes?.friendly_name || entityId.replace('calendar.', '');
+      const customName = entityConfig.name || '';
+      const customColor = entityConfig.color || '';
+
+      // Get default color to show as placeholder
+      const defaultColor = this._getDefaultColor(index);
 
       return `
-        <div class="entity-chip">
-          <span>${friendlyName}</span>
-          <button class="entity-chip-remove" data-entity="${entityId}" title="Remove">×</button>
+        <div class="entity-row" data-entity="${entityId}">
+          <div class="entity-row-header">
+            <span class="color-indicator" style="background-color: ${customColor || defaultColor};"></span>
+            <span class="entity-name">${friendlyName}</span>
+            <button class="entity-row-remove" data-entity="${entityId}" title="Remove">×</button>
+          </div>
+          <div class="entity-row-config">
+            <div class="config-field">
+              <label>Custom Name</label>
+              <input
+                type="text"
+                class="entity-custom-name"
+                data-entity="${entityId}"
+                placeholder="${friendlyName}"
+                value="${customName}"
+              />
+            </div>
+            <div class="config-field">
+              <label>Color</label>
+              <div class="color-input-wrapper">
+                <input
+                  type="color"
+                  class="entity-color-picker"
+                  data-entity="${entityId}"
+                  value="${customColor || defaultColor}"
+                />
+                <input
+                  type="text"
+                  class="entity-color-text"
+                  data-entity="${entityId}"
+                  placeholder="${defaultColor}"
+                  value="${customColor}"
+                  pattern="^#[0-9A-Fa-f]{6}$"
+                />
+                ${customColor ? `<button class="color-reset" data-entity="${entityId}" title="Reset to default">↺</button>` : ''}
+              </div>
+            </div>
+          </div>
         </div>
       `;
     }).join('');
 
-    // Attach remove handlers
-    container.querySelectorAll('.entity-chip-remove').forEach(button => {
+    // Attach event handlers
+    this._attachEntityListHandlers(container);
+  }
+
+  _getDefaultColor(index) {
+    const colors = [
+      '#4285f4', '#ea4335', '#fbbc04', '#34a853',
+      '#9c27b0', '#ff6d00', '#00bcd4', '#e91e63',
+    ];
+    return colors[index % colors.length];
+  }
+
+  _attachEntityListHandlers(container) {
+    // Remove button handlers
+    container.querySelectorAll('.entity-row-remove').forEach(button => {
       button.addEventListener('click', (ev) => {
         const entityToRemove = ev.target.dataset.entity;
         this._config = {
           ...this._config,
-          entities: this._config.entities.filter(e => e !== entityToRemove)
+          entities: this._config.entities.filter(e => e.entity !== entityToRemove)
         };
         this._fireConfigChanged();
         this._renderEntitiesList(container);
       });
     });
+
+    // Custom name input handlers
+    container.querySelectorAll('.entity-custom-name').forEach(input => {
+      input.addEventListener('input', (ev) => {
+        const entityId = ev.target.dataset.entity;
+        const newName = ev.target.value.trim();
+        this._updateEntityConfig(entityId, 'name', newName || null);
+      });
+    });
+
+    // Color picker handlers
+    container.querySelectorAll('.entity-color-picker').forEach(input => {
+      input.addEventListener('input', (ev) => {
+        const entityId = ev.target.dataset.entity;
+        const newColor = ev.target.value;
+        this._updateEntityConfig(entityId, 'color', newColor);
+
+        // Update the text input too
+        const textInput = container.querySelector(`.entity-color-text[data-entity="${entityId}"]`);
+        if (textInput) textInput.value = newColor;
+
+        // Re-render to show reset button
+        this._renderEntitiesList(container);
+      });
+    });
+
+    // Color text input handlers
+    container.querySelectorAll('.entity-color-text').forEach(input => {
+      input.addEventListener('input', (ev) => {
+        const entityId = ev.target.dataset.entity;
+        const newColor = ev.target.value.trim();
+
+        // Validate hex color format
+        if (/^#[0-9A-Fa-f]{6}$/.test(newColor)) {
+          this._updateEntityConfig(entityId, 'color', newColor);
+
+          // Update the color picker too
+          const pickerInput = container.querySelector(`.entity-color-picker[data-entity="${entityId}"]`);
+          if (pickerInput) pickerInput.value = newColor;
+
+          // Re-render to show reset button
+          this._renderEntitiesList(container);
+        }
+      });
+    });
+
+    // Color reset button handlers
+    container.querySelectorAll('.color-reset').forEach(button => {
+      button.addEventListener('click', (ev) => {
+        const entityId = ev.target.dataset.entity;
+        this._updateEntityConfig(entityId, 'color', null);
+        this._renderEntitiesList(container);
+      });
+    });
+  }
+
+  _updateEntityConfig(entityId, field, value) {
+    const entities = this._config.entities.map(e => {
+      if (e.entity === entityId) {
+        return { ...e, [field]: value };
+      }
+      return e;
+    });
+
+    this._config = {
+      ...this._config,
+      entities: entities
+    };
+
+    // Debounce the config-changed event
+    if (this._debounceTimeout) {
+      clearTimeout(this._debounceTimeout);
+    }
+
+    this._debounceTimeout = setTimeout(() => {
+      this._fireConfigChanged();
+    }, 300);
   }
 }
 
@@ -1142,7 +2091,7 @@ window.customCards.push({
 });
 
 console.info(
-  '%c CALENDAR-COLUMN-VIEW-CARD %c 0.1.1 ',
+  '%c CALENDAR-COLUMN-VIEW-CARD %c 0.2.0 ',
   'color: white; background: #4285f4; font-weight: 700;',
   'color: #4285f4; background: white; font-weight: 700;'
 );
