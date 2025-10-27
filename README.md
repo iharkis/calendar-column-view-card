@@ -154,7 +154,7 @@ Make sure your calendar entities are properly configured and showing in Home Ass
 
 1. Verify the resource is added correctly:
    - Go to Settings → Dashboards → Resources
-   - Confirm `/hacsfiles/calendar_column_view/calendar-column-view-card.js` is listed
+   - Confirm `/hacsfiles/calendar-column-view-card/calendar-column-view-card.js` is listed (HACS automatically adds this)
 
 2. Check browser console for errors:
    - Press F12 to open developer tools
@@ -201,13 +201,14 @@ Make sure your calendar entities are properly configured and showing in Home Ass
 
 ## Support
 
-For issues and feature requests, please check the Home Assistant logs:
-- Go to Settings → System → Logs
-- Look for errors related to `calendar_column_view`
+For issues and feature requests:
+- Open an issue on [GitHub](https://github.com/iharkis/calendar-column-view-card/issues)
+- Check browser console for JavaScript errors (F12 → Console tab)
+- Review the [troubleshooting section](#troubleshooting) above
 
 ## Version
 
-Current version: 0.1.0
+Current version: 0.2.1
 
 ## License
 
