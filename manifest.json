@@ -1,0 +1,10 @@
+{
+  "domain": "calendar_column_view",
+  "name": "Calendar Column View",
+  "documentation": "https://github.com/yourusername/calendar-column-view",
+  "dependencies": [],
+  "codeowners": ["@yourusername"],
+  "requirements": [],
+  "version": "0.2.0",
+  "iot_class": "calculated"
+}

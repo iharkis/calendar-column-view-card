@@ -1,0 +1,122 @@
+# Example Calendar Column View Card Configuration
+# Copy and paste this into your Lovelace dashboard
+
+# Basic example with simple entity list (uses default colors)
+type: custom:calendar-column-view-card
+entities:
+  - calendar.christmas_lights_2
+  - calendar.bins
+start_hour: 6
+end_hour: 22
+title: My Calendars
+
+# ---
+
+# Example with custom colors and names
+# type: custom:calendar-column-view-card
+# entities:
+#   - entity: calendar.christmas_lights_2
+#     name: "Holiday Lights"
+#     color: "#ff0000"
+#   - entity: calendar.bins
+#     name: "Bin Collection"
+#     color: "#00ff00"
+# start_hour: 6
+# end_hour: 22
+# title: My Calendars
+
+# ---
+
+# Mixed format example (some with custom settings, some default)
+# type: custom:calendar-column-view-card
+# entities:
+#   - entity: calendar.christmas_lights_2
+#     name: "Lights"
+#     color: "#9c27b0"
+#   - calendar.bins  # Uses default color and friendly_name
+# start_hour: 6
+# end_hour: 22
+# title: My Calendars
+
+# ---
+
+# Full day view example
+# type: custom:calendar-column-view-card
+# entities:
+#   - calendar.christmas_lights_2
+#   - calendar.bins
+# start_hour: 0
+# end_hour: 23
+# title: Full Day View
+
+# ---
+
+# Work hours example (9am - 5pm)
+# type: custom:calendar-column-view-card
+# entities:
+#   - calendar.christmas_lights_2
+# start_hour: 9
+# end_hour: 17
+# title: Work Schedule
+
+# ---
+
+# Compact view with smaller hour height
+# type: custom:calendar-column-view-card
+# entities:
+#   - calendar.christmas_lights_2
+#   - calendar.bins
+# start_hour: 6
+# end_hour: 22
+# hour_height: 40
+# title: Compact Calendar
+
+# ---
+
+# Example with all new features
+# type: custom:calendar-column-view-card
+# entities:
+#   - entity: calendar.christmas_lights_2
+#     name: "Lights"
+#     color: "#ff6b35"
+#   - entity: calendar.bins
+#     color: "#00a8cc"
+# start_hour: 8
+# end_hour: 20
+# title: My Day
+# time_format: 12h  # Use 12-hour time (2:00 PM)
+# show_all_day_events: true  # Show all-day events row
+# compact_mode: false  # Full detail mode
+# hour_height: 60
+
+# ---
+
+# CONFIGURATION OPTIONS:
+# - entities: List of calendar entities
+#   Simple format: - calendar.name
+#   Advanced format: - entity: calendar.name
+#                      name: "Custom Display Name"
+#                      color: "#hexcolor"
+# - start_hour: First hour to display (0-23)
+# - end_hour: Last hour to display (0-23)
+# - title: Card title
+# - hour_height: Height of each hour row in pixels (default: 60)
+# - time_format: '12h' or '24h' (default: '24h')
+# - show_all_day_events: true or false (default: true)
+# - compact_mode: true or false (default: false)
+#
+# INSTRUCTIONS:
+# 1. Uncomment one of the examples above (remove the # symbols)
+# 2. Adjust the entities list to match your calendar entity IDs
+# 3. Customize colors and names as desired
+# 4. Adjust start_hour, end_hour, and title as needed
+# 5. Copy the configuration
+# 6. Add to your dashboard:
+#    - Edit your dashboard
+#    - Add a new card
+#    - Choose "Manual" card type
+#    - Paste the configuration
+#    - Save
+#
+# NOTE: You can also configure colors and names using the visual editor
+# in the Home Assistant UI when editing the card!
