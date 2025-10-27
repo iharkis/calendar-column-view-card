@@ -1142,7 +1142,7 @@ window.customCards.push({
 });
 
 console.info(
-  '%c CALENDAR-COLUMN-VIEW-CARD %c 0.1.0 ',
+  '%c CALENDAR-COLUMN-VIEW-CARD %c 0.1.1 ',
   'color: white; background: #4285f4; font-weight: 700;',
   'color: #4285f4; background: white; font-weight: 700;'
 );
