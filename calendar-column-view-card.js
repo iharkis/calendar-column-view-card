@@ -786,6 +786,7 @@ class CalendarColumnViewCardEditor extends HTMLElement {
     super();
     this.attachShadow({ mode: 'open' });
     this._config = {};
+    this._isEditing = false; // Flag to prevent re-render during user input
   }
 
   connectedCallback() {
@@ -808,7 +809,10 @@ class CalendarColumnViewCardEditor extends HTMLElement {
       title: config.title || 'Calendar View',
       hour_height: config.hour_height || 60,
     };
-    this.render();
+    // Only render if we're not currently editing (prevents focus loss)
+    if (!this._isEditing) {
+      this.render();
+    }
   }
 
   set hass(hass) {
@@ -1036,6 +1040,8 @@ class CalendarColumnViewCardEditor extends HTMLElement {
     // Set values
     if (titleField) {
       titleField.value = this._config.title || '';
+      titleField.addEventListener('focus', () => { this._isEditing = true; });
+      titleField.addEventListener('blur', () => { this._isEditing = false; });
       titleField.addEventListener('input', this._valueChanged.bind(this));
     }
 
@@ -1069,16 +1075,22 @@ class CalendarColumnViewCardEditor extends HTMLElement {
 
     if (startHourField) {
       startHourField.value = this._config.start_hour;
+      startHourField.addEventListener('focus', () => { this._isEditing = true; });
+      startHourField.addEventListener('blur', () => { this._isEditing = false; });
       startHourField.addEventListener('input', this._valueChanged.bind(this));
     }
 
     if (endHourField) {
       endHourField.value = this._config.end_hour;
+      endHourField.addEventListener('focus', () => { this._isEditing = true; });
+      endHourField.addEventListener('blur', () => { this._isEditing = false; });
       endHourField.addEventListener('input', this._valueChanged.bind(this));
     }
 
     if (hourHeightField) {
       hourHeightField.value = this._config.hour_height;
+      hourHeightField.addEventListener('focus', () => { this._isEditing = true; });
+      hourHeightField.addEventListener('blur', () => { this._isEditing = false; });
       hourHeightField.addEventListener('input', this._valueChanged.bind(this));
     }
   }
